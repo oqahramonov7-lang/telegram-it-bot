@@ -5,10 +5,9 @@ import feedparser
 import requests
 
 # Sozlamalar (GitHub Secrets orqali xavfsiz olinadi)
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-CHANNEL_ID = os.getenv("CHANNEL_ID", "@kosibiy")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+CHANNEL_ID = os.getenv("CHANNEL_ID", "").strip() or "@kosibiy"
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 
 HISTORY_FILE = "sent_posts.json"
 MAX_POSTS_PER_RUN = 3  # Bir marta ishlaganda kanalga nechta xabar yuborilsin
@@ -53,24 +52,44 @@ def is_tech_related(entry):
     return any(keyword in text for keyword in TECH_KEYWORDS)
 
 
-def summarize_and_translate_with_ai(title, summary, link):
+def get_available_gemini_models():
+    """Gemini API da ushbu kalit uchun mavjud modellarni aniqlash."""
+    if not GEMINI_API_KEY:
+        return []
+    try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models?key={GEMINI_API_KEY}"
+        res = requests.get(url, timeout=10)
+        if res.status_code == 200:
+            data = res.json()
+            models = [
+                m.get("name", "").replace("models/", "")
+                for m in data.get("models", [])
+                if "generateContent" in m.get("supportedGenerationMethods", [])
+            ]
+            print(f"Mavjud Gemini modellari: {models}")
+            return models
+        else:
+            print(f"Gemini ModelService xatolik: {res.status_code} - {res.text}")
+    except Exception as e:
+        print(f"Gemini ModelService ulanish xatoligi: {e}")
+    return []
+
+
+def summarize_and_translate_with_ai(title, summary, link, available_models):
     """
     Gemini AI yordamida yangilikni tahlil qilish:
     1. Haqiqatan IT/texnologiyaga oid muhim yangilik ekanini tekshiradi.
     2. O'zbek tiliga ravon, qisqa va qiziqarli Telegram post ko'rinishida tarjima qiladi.
     """
-    if not GEMINI_API_KEY:
-        return (
-            f"⚡️ <b>{title}</b>\n\n"
-            f"{summary[:300]}...\n\n"
-            f"#texnologiya #IT\n\n"
-            f"🔗 <a href='{link}'>Manba</a>"
-        )
-
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
+    fallback_post = (
+        f"⚡️ <b>{title}</b>\n\n"
+        f"{summary[:300]}...\n\n"
+        f"#texnologiya #IT\n\n"
+        f"🔗 <a href='{link}'>Manba</a>"
     )
+
+    if not GEMINI_API_KEY:
+        return fallback_post
 
     prompt = f"""Sen IT va texnologiyalar bo'yicha Telegram kanal muharririsan.
 Quyidagi yangilikni ko'rib chiq:
@@ -91,37 +110,38 @@ Format talablari:
         "contents": [{"parts": [{"text": prompt}]}]
     }
 
-    try:
-        response = requests.post(url, json=payload, timeout=30)
-        if response.status_code == 200:
-            data = response.json()
-            ai_text = (
-                data.get("candidates", [{}])[0]
-                .get("content", {})
-                .get("parts", [{}])[0]
-                .get("text", "")
-                .strip()
-            )
-            if ai_text and ai_text.upper() != "SKIP":
-                return f"{ai_text}\n\n🔗 <a href='{link}'>Manba</a>"
-        else:
-            print(f"AI javob kodi: {response.status_code} - {response.text}")
-            return (
-                f"⚡️ <b>{title}</b>\n\n"
-                f"{summary[:300]}...\n\n"
-                f"#texnologiya #IT\n\n"
-                f"🔗 <a href='{link}'>Manba</a>"
-            )
-    except Exception as e:
-        print(f"AI xatolik: {e}")
-        return (
-            f"⚡️ <b>{title}</b>\n\n"
-            f"{summary[:300]}...\n\n"
-            f"#texnologiya #IT\n\n"
-            f"🔗 <a href='{link}'>Manba</a>"
-        )
+    # Sinab ko'rish uchun modellar ro'yxati
+    candidate_models = list(available_models)
+    for default_m in ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-flash-latest"]:
+        if default_m not in candidate_models:
+            candidate_models.append(default_m)
 
-    return None
+    for model in candidate_models:
+        url = (
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{model}:generateContent?key={GEMINI_API_KEY}"
+        )
+        try:
+            response = requests.post(url, json=payload, timeout=30)
+            if response.status_code == 200:
+                data = response.json()
+                ai_text = (
+                    data.get("candidates", [{}])[0]
+                    .get("content", {})
+                    .get("parts", [{}])[0]
+                    .get("text", "")
+                    .strip()
+                )
+                if ai_text and ai_text.upper() != "SKIP":
+                    return f"{ai_text}\n\n🔗 <a href='{link}'>Manba</a>"
+                elif ai_text.upper() == "SKIP":
+                    return None
+            else:
+                print(f"AI ({model}) javob kodi: {response.status_code} - {response.text}")
+        except Exception as e:
+            print(f"AI ({model}) xatolik: {e}")
+
+    return fallback_post
 
 
 def send_to_telegram(post_text):
@@ -133,18 +153,25 @@ def send_to_telegram(post_text):
         "parse_mode": "HTML",
         "disable_web_page_preview": False,
     }
-    response = requests.post(url, json=payload, timeout=20)
-    if response.status_code == 200:
-        print("Xabar muvaffaqiyatli yuborildi!")
-        return True
-    else:
-        print(f"Telegram xatolik: {response.text}")
+    try:
+        response = requests.post(url, json=payload, timeout=20)
+        if response.status_code == 200:
+            print(f"Xabar muvaffaqiyatli yuborildi ({CHANNEL_ID})!")
+            return True
+        else:
+            print(f"Telegram xatolik: {response.status_code} - {response.text}")
+            return False
+    except Exception as e:
+        print(f"Telegram ulanish xatoligi: {e}")
         return False
 
 
 def main():
+    print(f"Bot ishga tushdi. Kanal: {CHANNEL_ID}")
     sent_posts = load_sent_posts()
     newly_sent = 0
+
+    available_models = get_available_gemini_models()
 
     for feed_url in RSS_FEEDS:
         feed = feedparser.parse(feed_url)
@@ -158,7 +185,7 @@ def main():
             if is_tech_related(entry):
                 clean_summary = entry.get("summary", "").split("<")[0].strip()[:600]
                 uzbek_post = summarize_and_translate_with_ai(
-                    entry.get("title", ""), clean_summary, link
+                    entry.get("title", ""), clean_summary, link, available_models
                 )
 
                 if uzbek_post:
@@ -176,6 +203,7 @@ def main():
             break
 
     save_sent_posts(sent_posts)
+    print(f"Tugatildi. Yangi yuborilgan postlar soni: {newly_sent}")
 
 
 if __name__ == "__main__":
