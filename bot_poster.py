@@ -17,7 +17,7 @@ MAX_POSTS_PER_RUN = 3  # Bir marta ishlaganda kanalga nechta xabar yuborilsin
 
 # Dunyodagi eng mashhur IT va texnologiya yangiliklar manbalari (RSS)
 RSS_FEEDS = [
-    "https://feeds.feedburner.com/TechCrunch/",
+    "https://techcrunch.com/feed/",
     "https://www.theverge.com/rss/index.xml",
     "https://hnrss.org/frontpage",
     "https://habr.com/ru/rss/hubs/it/all/",
