@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # Matches the Python the bot runs on in production.
+          python-version: '3.14'
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Byte-compile
+        run: python -m compileall -q bot_poster.py
+
+      - name: Import module
+        run: python -c "import bot_poster; print('import ok')"
+
+      - name: Smoke-test RSS sources
+        env:
+          PYTHONPATH: .
+        run: python .github/ci/check_feeds.py
