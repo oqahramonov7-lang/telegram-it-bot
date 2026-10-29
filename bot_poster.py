@@ -8,6 +8,7 @@ import requests
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 CHANNEL_ID = os.getenv("CHANNEL_ID", "@kosibiy")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
 
 HISTORY_FILE = "sent_posts.json"
 MAX_POSTS_PER_RUN = 3  # Bir marta ishlaganda kanalga nechta xabar yuborilsin
@@ -68,7 +69,7 @@ def summarize_and_translate_with_ai(title, summary, link):
 
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+        f"{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
     )
 
     prompt = f"""Sen IT va texnologiyalar bo'yicha Telegram kanal muharririsan.
