@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import time
 import feedparser
 import requests
@@ -59,6 +60,22 @@ def is_tech_related(entry):
     return any(keyword in text for keyword in TECH_KEYWORDS)
 
 
+def clean_html(text):
+    """Make AI output safe for Telegram parse_mode=HTML.
+
+    The model answers in Markdown often enough to matter, and Telegram rejects
+    a whole message over one unbalanced tag, so convert what converts cleanly
+    and strip every tag if the result still does not balance.
+    """
+    text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text, flags=re.S)
+    text = re.sub(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)", r"<i>\1</i>", text, flags=re.S)
+
+    for tag in ("b", "i", "u", "s", "code", "pre"):
+        if text.count(f"<{tag}>") != text.count(f"</{tag}>"):
+            return re.sub(r"<[^>]+>", "", text)
+    return text
+
+
 def summarize_and_translate_with_ai(title, summary, link):
     """
     Gemini AI yordamida yangilikni tahlil qilish:
@@ -94,7 +111,14 @@ Format talablari:
 - Hech qanday qo'shimcha izoh yozma, faqat tayyor post matnini qaytar."""
 
     payload = {
-        "contents": [{"parts": [{"text": prompt}]}]
+        "contents": [{"parts": [{"text": prompt}]}],
+        # Thinking tokens come out of the same budget as the answer, and the
+        # default budget cut posts off mid-sentence, leaving an unclosed <b>
+        # tag that Telegram refuses to render.
+        "generationConfig": {
+            "maxOutputTokens": 2048,
+            "thinkingConfig": {"thinkingLevel": "low"},
+        },
     }
 
     # 429 and 5xx mean Google is busy, not that the request is wrong, so those
@@ -116,16 +140,21 @@ Format talablari:
         else:
             if response.status_code == 200:
                 data = response.json()
-                ai_text = (
-                    data.get("candidates", [{}])[0]
-                    .get("content", {})
-                    .get("parts", [{}])[0]
-                    .get("text", "")
-                    .strip()
-                )
+                candidate = (data.get("candidates") or [{}])[0]
+                finish_reason = candidate.get("finishReason")
+                ai_text = "".join(
+                    part.get("text", "")
+                    for part in candidate.get("content", {}).get("parts", [])
+                ).strip()
+
+                if finish_reason not in (None, "STOP"):
+                    # A half-written post is not worth sending.
+                    last_error = f"javob tugallanmadi (finishReason={finish_reason})"
+                    break
                 if not ai_text or ai_text.upper() == "SKIP":
                     return None  # AI bu yangilikni IT emas deb hisobladi
-                return f"{ai_text}\n\n🔗 <a href='{link}'>Manba</a>"
+                post = clean_html(ai_text)
+                return f"{post}\n\n🔗 <a href='{link}'>Manba</a>"
 
             last_error = f"HTTP {response.status_code}: {response.text[:200]}"
             if response.status_code not in retryable:
