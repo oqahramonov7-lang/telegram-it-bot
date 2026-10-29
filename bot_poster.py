@@ -8,6 +8,9 @@ import requests
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 CHANNEL_ID = os.getenv("CHANNEL_ID", "@kosibiy")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+# Google retires model aliases without warning, so keep this overridable
+# from the environment instead of hardcoding it in the request URL.
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
 
 HISTORY_FILE = "sent_posts.json"
 MAX_POSTS_PER_RUN = 3  # Bir marta ishlaganda kanalga nechta xabar yuborilsin
@@ -27,6 +30,10 @@ TECH_KEYWORDS = [
     "hardware", "algorithm", "open source", "linux", "programming", "data",
     "chip", "nvidia", "robot", "api", "web", "app", "security", "tech"
 ]
+
+
+class AIUnavailable(Exception):
+    """Gemini produced no post; the item stays unsent so a later run retries it."""
 
 
 def load_sent_posts():
@@ -68,7 +75,7 @@ def summarize_and_translate_with_ai(title, summary, link):
 
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+        f"{GEMINI_MODEL}:generateContent"
     )
 
     prompt = f"""Sen IT va texnologiyalar bo'yicha Telegram kanal muharririsan.
@@ -90,37 +97,45 @@ Format talablari:
         "contents": [{"parts": [{"text": prompt}]}]
     }
 
-    try:
-        response = requests.post(url, json=payload, timeout=30)
-        if response.status_code == 200:
-            data = response.json()
-            ai_text = (
-                data.get("candidates", [{}])[0]
-                .get("content", {})
-                .get("parts", [{}])[0]
-                .get("text", "")
-                .strip()
-            )
-            if ai_text and ai_text.upper() != "SKIP":
-                return f"{ai_text}\n\n🔗 <a href='{link}'>Manba</a>"
-        else:
-            print(f"AI javob kodi: {response.status_code} - {response.text}")
-            return (
-                f"⚡️ <b>{title}</b>\n\n"
-                f"{summary[:300]}...\n\n"
-                f"#texnologiya #IT\n\n"
-                f"🔗 <a href='{link}'>Manba</a>"
-            )
-    except Exception as e:
-        print(f"AI xatolik: {e}")
-        return (
-            f"⚡️ <b>{title}</b>\n\n"
-            f"{summary[:300]}...\n\n"
-            f"#texnologiya #IT\n\n"
-            f"🔗 <a href='{link}'>Manba</a>"
-        )
+    # 429 and 5xx mean Google is busy, not that the request is wrong, so those
+    # are worth another attempt; anything else fails immediately.
+    retryable = {429, 500, 502, 503, 504}
+    backoff = (2, 6)
+    last_error = "noma'lum xatolik"
 
-    return None
+    for attempt in range(len(backoff) + 1):
+        try:
+            response = requests.post(
+                url,
+                json=payload,
+                headers={"x-goog-api-key": GEMINI_API_KEY},
+                timeout=60,
+            )
+        except requests.RequestException as exc:
+            last_error = f"so'rov uzildi: {exc}"
+        else:
+            if response.status_code == 200:
+                data = response.json()
+                ai_text = (
+                    data.get("candidates", [{}])[0]
+                    .get("content", {})
+                    .get("parts", [{}])[0]
+                    .get("text", "")
+                    .strip()
+                )
+                if not ai_text or ai_text.upper() == "SKIP":
+                    return None  # AI bu yangilikni IT emas deb hisobladi
+                return f"{ai_text}\n\n🔗 <a href='{link}'>Manba</a>"
+
+            last_error = f"HTTP {response.status_code}: {response.text[:200]}"
+            if response.status_code not in retryable:
+                break
+
+        if attempt < len(backoff):
+            print(f"AI urinish {attempt + 1} muvaffaqiyatsiz ({last_error}), qayta urinamiz")
+            time.sleep(backoff[attempt])
+
+    raise AIUnavailable(last_error)
 
 
 def send_to_telegram(post_text):
@@ -156,9 +171,16 @@ def main():
 
             if is_tech_related(entry):
                 clean_summary = entry.get("summary", "").split("<")[0].strip()[:600]
-                uzbek_post = summarize_and_translate_with_ai(
-                    entry.get("title", ""), clean_summary, link
-                )
+                try:
+                    uzbek_post = summarize_and_translate_with_ai(
+                        entry.get("title", ""), clean_summary, link
+                    )
+                except AIUnavailable as exc:
+                    # Posting the untranslated source text is worse than posting
+                    # nothing, so leave the item unsent for the next run.
+                    print(f"AI tarjima qilib bermadi, yurish to'xtatiladi: {exc}")
+                    save_sent_posts(sent_posts)
+                    return
 
                 if uzbek_post:
                     if send_to_telegram(uzbek_post):
