@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import time
 import feedparser
 import requests
@@ -10,10 +11,9 @@ CHANNEL_ID = os.getenv("CHANNEL_ID", "").strip() or "@kosibiy"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 
 HISTORY_FILE = "sent_posts.json"
-MAX_POSTS_PER_RUN = 3  # Bir marta ishlaganda kanalga nechta xabar yuborilsin
-MAX_HOURS_OLD = 36     # 36 soatdan eski xabarlarni tashlab yuborish (faqat yangi xabarlar)
+MAX_HOURS_OLD = 36  # Faqat oxirgi 36 soat ichidagi yangiliklar
 
-# Dunyodagi eng mashhur va yangi IT xabarlar manbalari (haqiqiy RSS)
+# Dunyodagi eng yetakchi IT va texnologiya manbalari (RSS)
 RSS_FEEDS = [
     "https://techcrunch.com/feed/",
     "https://www.theverge.com/rss/index.xml",
@@ -22,7 +22,7 @@ RSS_FEEDS = [
     "https://www.bleepingcomputer.com/feed/",
 ]
 
-# Boshlang'ich filtrlash uchun kalit so'zlar
+# IT va texnologiya mavzusini aniqlash uchun kalit so'zlar
 TECH_KEYWORDS = [
     "ai", "artificial intelligence", "python", "software", "cybersecurity",
     "cloud", "google", "apple", "microsoft", "openai", "developer", "startup",
@@ -30,7 +30,7 @@ TECH_KEYWORDS = [
     "chip", "nvidia", "robot", "api", "web", "app", "security", "tech", "model", "llm"
 ]
 
-# Gemini modellarining ustuvor ro'yxati (birinchi bo'lib Gemini 3.8 Flash)
+# Gemini modellarining ustuvor ro'yxati (birinchi bo'lib Gemini 3.8 va 3.5 Flash)
 PREFERRED_MODELS = [
     os.getenv("GEMINI_MODEL", "").strip(),
     "gemini-3.8-flash",
@@ -79,35 +79,84 @@ def is_fresh(entry, max_hours=MAX_HOURS_OLD):
     return True
 
 
-def summarize_and_translate_with_ai(title, summary, link):
+def collect_candidates(sent_posts, max_per_feed=4):
+    """Barcha manbalardan oxirgi soatlardagi eng yangi IT xabarlarini to'plash."""
+    candidates = []
+    seen_ids = set(sent_posts)
+
+    for feed_url in RSS_FEEDS:
+        print(f"Manba tekshirilmoqda: {feed_url}")
+        try:
+            feed = feedparser.parse(feed_url)
+            count = 0
+            for entry in feed.entries:
+                post_id = entry.get("id", entry.get("link"))
+                link = entry.get("link", "")
+                title = entry.get("title", "").strip()
+
+                if not post_id or post_id in seen_ids or not link or not title:
+                    continue
+
+                if not is_fresh(entry):
+                    continue
+
+                if is_tech_related(entry):
+                    summary = entry.get("summary", "").split("<")[0].strip()[:500]
+                    candidates.append({
+                        "id": post_id,
+                        "title": title,
+                        "summary": summary,
+                        "link": link
+                    })
+                    seen_ids.add(post_id)
+                    count += 1
+                    if count >= max_per_feed:
+                        break
+        except Exception as e:
+            print(f"Feed o'qishda xatolik ({feed_url}): {e}")
+
+    return candidates
+
+
+def select_and_format_best_news(candidates):
     """
-    Gemini AI yordamida eng yangi xabarni tahlil qilish va o'zbek tiliga
-    Telegram kanal uchun chiroyli post ko'rinishida tayyorlash.
+    To'plangan xabarlar orasidan eng samarali, muhim va ommabop BITTA
+    yangilikni Gemini AI orqali saralab, o'zbek tilidagi tayyor post holatiga keltirish.
     """
-    fallback_post = (
-        f"⚡️ <b>{title}</b>\n\n"
-        f"{summary[:300]}...\n\n"
-        f"#texnologiya #IT\n\n"
-        f"🔗 <a href='{link}'>Manba</a>"
-    )
+    if not candidates:
+        return None, None
 
     if not GEMINI_API_KEY:
-        return fallback_post
+        top = candidates[0]
+        text = (
+            f"⚡️ <b>{top['title']}</b>\n\n"
+            f"{top['summary'][:300]}...\n\n"
+            f"#texnologiya #IT\n\n"
+            f"🔗 <a href='{top['link']}'>Manba</a>"
+        )
+        return top, text
 
-    prompt = f"""Sen IT va texnologiyalar bo'yicha Telegram kanal muharririsan.
-Quyidagi eng so'nggi yangilikni ko'rib chiq:
+    candidates_text = ""
+    for idx, c in enumerate(candidates[:10], start=1):
+        candidates_text += f"[{idx}] Sarlavha: {c['title']}\nQisqacha: {c['summary']}\n\n"
 
-Sarlavha: {title}
-Qisqacha matn: {summary}
+    prompt = f"""Sen professional IT va texnologiyalar kanali bosh muharririsan.
+Quyida bugungi eng so'nggi texnologiya yangiliklari ro'yxati keltirilgan:
+
+{candidates_text}
 
 Vazifang:
-1. Agar bu yangilik IT, dasturlash, sun'iy intellekt, gadjetlar yoki texnologiyaga UMUMAN aloqasi bo'lmasa, faqatgina "SKIP" deb javob qaytar.
-2. Agar IT va texnologiyaga oid bo'lsa, uni o'zbek tilida Telegram kanal uchun qiziqarli, o'qishli va lo'nda post qilib yozib ber.
-Format talablari:
-- Birinchi qatorda mavzuga mos smaylik va qalin harflar bilan diqqat tortuvchi sarlavha (HTML <b> tegida, masalan: ⚡️ <b>...</b>).
-- Keyin 2-3 ta tushunarli gapda yangilikning eng muhim mazmuni.
-- Oxirida 2-3 ta mos xeshteg (#AI #texnologiya #IT kabi).
-- Hech qanday boshqa izoh yoki muqaddima yozma, faqat tayyor post matnini qaytar."""
+1. Ushbu ro'yxatdan keng ommaga eng qiziqarli, eng muhim, shov-shuvli va dolzarb bo'lgan BITTA eng yaxshi yangilikni tanla.
+2. Tanlangan yangilikni o'zbek tilida Telegram kanal uchun diqqatni tortuvchi, lo'nda va ravon post ko'rinishida yozib ber.
+
+Javobingni QAT'IY quyidagi formatda ber:
+INDEX: [Tanlagan yangiliging raqami, masalan: 1]
+POST:
+[Mos smaylik va <b>qalin harflar bilan</b> diqqat tortuvchi sarlavha]
+
+[2-3 ta tushunarli gapdan iborat asosiy mazmun]
+
+[2-3 ta mos xeshteg, masalan: #IT #AI #texnologiya]"""
 
     payload = {
         "contents": [{"parts": [{"text": prompt}]}]
@@ -129,18 +178,40 @@ Format talablari:
                     .get("text", "")
                     .strip()
                 )
-                if ai_text and ai_text.upper() != "SKIP":
-                    print(f"Post Gemini ({model}) orqali tarjima qilindi.")
-                    return f"{ai_text}\n\n🔗 <a href='{link}'>Manba</a>"
-                elif ai_text.upper() == "SKIP":
-                    print(f"Yangilik mavzuga to'g'ri kelmadi (SKIP): {title[:40]}...")
-                    return None
+                if ai_text:
+                    match = re.search(r"INDEX:\s*(\d+)", ai_text, re.IGNORECASE)
+                    chosen_idx = 0
+                    if match:
+                        num = int(match.group(1)) - 1
+                        if 0 <= num < len(candidates[:10]):
+                            chosen_idx = num
+
+                    chosen = candidates[chosen_idx]
+
+                    if "POST:" in ai_text:
+                        post_content = ai_text.split("POST:", 1)[1].strip()
+                    elif match:
+                        post_content = ai_text[match.end():].strip()
+                    else:
+                        post_content = ai_text.strip()
+
+                    final_post = f"{post_content}\n\n🔗 <a href='{chosen['link']}'>Manba</a>"
+                    print(f"Gemini ({model}) orqali {chosen_idx+1}-raqamli ommabop yangilik tanlandi: {chosen['title'][:50]}")
+                    return chosen, final_post
             else:
                 print(f"AI ({model}) javob kodi: {response.status_code} - {response.text[:200]}")
         except Exception as e:
             print(f"AI ({model}) xatolik: {e}")
 
-    return fallback_post
+    # AI ishlamay qolgandagi zaxira
+    top = candidates[0]
+    fallback = (
+        f"⚡️ <b>{top['title']}</b>\n\n"
+        f"{top['summary'][:300]}...\n\n"
+        f"#texnologiya #IT\n\n"
+        f"🔗 <a href='{top['link']}'>Manba</a>"
+    )
+    return top, fallback
 
 
 def send_to_telegram(post_text):
@@ -168,46 +239,23 @@ def send_to_telegram(post_text):
 def main():
     print(f"Bot ishga tushdi. Kanal: {CHANNEL_ID}")
     sent_posts = load_sent_posts()
-    newly_sent = 0
 
-    for feed_url in RSS_FEEDS:
-        print(f"Manba tekshirilmoqda: {feed_url}")
-        feed = feedparser.parse(feed_url)
-        for entry in feed.entries[:8]:
-            post_id = entry.get("id", entry.get("link"))
-            link = entry.get("link", "")
-            title = entry.get("title", "")
+    candidates = collect_candidates(sent_posts)
+    print(f"Jami yangi nomzodlar soni: {len(candidates)}")
 
-            if not post_id or post_id in sent_posts:
-                continue
+    if not candidates:
+        print("Hech qanday yangi xabar topilmadi.")
+        return
 
-            # Faqat oxirgi 36 soat ichida chiqqan yangi xabarlarni olamiz
-            if not is_fresh(entry):
-                continue
+    chosen_entry, post_text = select_and_format_best_news(candidates)
 
-            if is_tech_related(entry):
-                print(f"Yangi xabar topildi: {title[:60]}")
-                clean_summary = entry.get("summary", "").split("<")[0].strip()[:600]
-                uzbek_post = summarize_and_translate_with_ai(
-                    title, clean_summary, link
-                )
-
-                if uzbek_post:
-                    if send_to_telegram(uzbek_post):
-                        sent_posts.append(post_id)
-                        newly_sent += 1
-                        time.sleep(3)
-
-                    if newly_sent >= MAX_POSTS_PER_RUN:
-                        break
-                else:
-                    sent_posts.append(post_id)
-
-        if newly_sent >= MAX_POSTS_PER_RUN:
-            break
-
-    save_sent_posts(sent_posts)
-    print(f"Tugatildi. Yangi yuborilgan postlar soni: {newly_sent}")
+    if chosen_entry and post_text:
+        if send_to_telegram(post_text):
+            sent_posts.append(chosen_entry["id"])
+            save_sent_posts(sent_posts)
+            print(f"Tanlangan yangilik kanalga joylandi: {chosen_entry['title']}")
+        else:
+            print("Telegramga yuborishda xatolik yuz berdi.")
 
 
 if __name__ == "__main__":

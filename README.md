@@ -8,8 +8,8 @@ Dunyoning yetakchi IT manbalaridan (TechCrunch, The Verge, Hacker News, Habr) en
 
 - 📡 **RSS agregatsiya**: TechCrunch, The Verge, Hacker News va Habr'dan eng yangi postlarni tekshirish.
 - 🎯 **Kalit so'zlar bo'yicha filtrlash**: Faqat IT, AI, dasturlash va texnologiyaga tegishli postlarni saralash.
-- 🧠 **Gemini AI integratsiyasi**: Matnni tahlil qilib, o'zbek tilida tayyor Telegram post (sarlavha, qisqa sharh va xeshteglar) tayyorlash.
-- ⏰ **Avtomatik jadval (GitHub Actions)**: Hech qanday server talab qilmasdan, kuniga 3 marta (`09:00`, `15:00`, `21:00` Toshkent vaqti bilan) bepul ishga tushadi.
+- 🧠 **Gemini AI saralash va tahlil**: Yangiliklar orasidan eng muhim, ommabop va qiziqarlisini tanlab, o'zbek tilida tayyor Telegram post (sarlavha, qisqa sharh va xeshteglar) tayyorlash.
+- ⏰ **Avtomatik jadval (GitHub Actions)**: Kuniga 3 marta (`09:00`, `13:00`, `19:00` Toshkent vaqti bilan) avtomatik ishga tushib, bittadan sifatli post chiqaradi.
 - 🗂 **Takrorlanishning oldini olish**: Yuborilgan xabarlar `sent_posts.json` faylida saqlanadi.
 
 ---
