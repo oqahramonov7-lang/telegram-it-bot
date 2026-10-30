@@ -33,10 +33,10 @@ TECH_KEYWORDS = [
 # Gemini modellarining ustuvor ro'yxati (birinchi bo'lib Gemini 3.8 va 3.5 Flash)
 PREFERRED_MODELS = [
     os.getenv("GEMINI_MODEL", "").strip(),
-    "gemini-3.8-flash",
+    "gemini-3.5-flash-lite",
     "gemini-3.5-flash",
+    "gemini-3.8-flash",
     "gemini-flash-latest",
-    "gemini-2.5-flash-lite",
     "gemini-3.1-pro-preview"
 ]
 PREFERRED_MODELS = [m for m in PREFERRED_MODELS if m]

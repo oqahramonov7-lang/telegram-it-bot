@@ -2,7 +2,8 @@ name: Send Daily Tech News
 
 on:
   schedule:
-    - cron: '0 4,8,14 * * *'  # 09:00, 13:00, 19:00 Toshkent vaqti (UTC+5)
+    # 09:00, 12:00, 19:00 Toshkent vaqti (UTC+5: 04:00, 07:00, 14:00 UTC)
+    - cron: '0 4,7,14 * * *'
   workflow_dispatch:
 
 permissions:
