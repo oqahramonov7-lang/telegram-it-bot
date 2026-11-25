@@ -5,7 +5,20 @@ import time
 import feedparser
 import requests
 
-# Sozlamalar (GitHub Secrets orqali xavfsiz olinadi)
+# Agar .env fayli mavjud bo'lsa, sozlamalarni yuklab oladi (lokal kompyuter uchun)
+ENV_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+if os.path.exists(ENV_FILE):
+    try:
+        with open(ENV_FILE, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, val = line.split("=", 1)
+                    os.environ.setdefault(key.strip(), val.strip().strip("'\""))
+    except Exception as e:
+        print(f".env faylini o'qishda xatolik: {e}")
+
+# Sozlamalar (Lokal .env yoki GitHub Secrets orqali olinadi)
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 CHANNEL_ID = os.getenv("CHANNEL_ID", "").strip() or "@kosibiy"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
@@ -30,14 +43,13 @@ TECH_KEYWORDS = [
     "chip", "nvidia", "robot", "api", "web", "app", "security", "tech", "model", "llm"
 ]
 
-# Gemini modellarining ustuvor ro'yxati (birinchi bo'lib Gemini 3.8 va 3.5 Flash)
+# Gemini modellarining ustuvor ro'yxati (tezkor va barqaror modellar)
 PREFERRED_MODELS = [
     os.getenv("GEMINI_MODEL", "").strip(),
     "gemini-3.5-flash-lite",
     "gemini-3.5-flash",
-    "gemini-3.8-flash",
+    "gemini-3.1-flash-lite",
     "gemini-flash-latest",
-    "gemini-3.1-pro-preview"
 ]
 PREFERRED_MODELS = [m for m in PREFERRED_MODELS if m]
 
@@ -118,6 +130,41 @@ def collect_candidates(sent_posts, max_per_feed=4):
     return candidates
 
 
+def sanitize_uzbek_text(text):
+    """Matndagi begona yoki buzilgan belgilarni (masalan, arabcha harflar) tozalash."""
+    if not text:
+        return ""
+    # O'zbek lotin matniga tasodifan tushib qoladigan arabcha harflarni tuzatish
+    text = text.replace("lرزatgan", "larzatgan")
+    text = text.replace("رز", "rz")
+    # Arab va boshqa begona yozuvdagi belgilarni tozalash
+    text = re.sub(r"[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]", "", text)
+    return text.strip()
+
+
+def find_best_matching_candidate(candidates_subset, ai_text, default_idx=0):
+    """
+    Agar AI qaytargan ID shubhali bo'lsa yoki xato bo'lsa,
+    AI matnidagi kalit so'zlarni nomzodlar sarlavhalari bilan solishtirib eng mosini topish.
+    """
+    clean_ai = re.sub(r"[^\w\s]", " ", ai_text.lower())
+    ai_words = set(w for w in clean_ai.split() if len(w) > 3)
+
+    best_idx = default_idx
+    best_score = 0
+
+    for idx, cand in enumerate(candidates_subset):
+        cand_text = f"{cand.get('title', '')} {cand.get('summary', '')}".lower()
+        cand_words = set(w for w in re.sub(r"[^\w\s]", " ", cand_text).split() if len(w) > 3)
+        common = ai_words.intersection(cand_words)
+        score = len(common)
+        if score > best_score:
+            best_score = score
+            best_idx = idx
+
+    return best_idx
+
+
 def select_and_format_best_news(candidates):
     """
     To'plangan xabarlar orasidan eng samarali, muhim va ommabop BITTA
@@ -126,8 +173,11 @@ def select_and_format_best_news(candidates):
     if not candidates:
         return None, None
 
+    # Eng so'nggi 15 ta nomzodni ko'rib chiqishga taqdim etamiz
+    candidates_subset = candidates[:15]
+
     if not GEMINI_API_KEY:
-        top = candidates[0]
+        top = candidates_subset[0]
         text = (
             f"⚡️ <b>{top['title']}</b>\n\n"
             f"{top['summary'][:300]}...\n\n"
@@ -137,8 +187,8 @@ def select_and_format_best_news(candidates):
         return top, text
 
     candidates_text = ""
-    for idx, c in enumerate(candidates[:10], start=1):
-        candidates_text += f"[{idx}] Sarlavha: {c['title']}\nQisqacha: {c['summary']}\n\n"
+    for idx, c in enumerate(candidates_subset, start=1):
+        candidates_text += f"[ID: {idx}] Sarlavha: {c['title']}\nManba havolasi: {c['link']}\nQisqacha: {c['summary']}\n\n"
 
     prompt = f"""Sen professional IT va texnologiyalar kanali bosh muharririsan.
 Quyida bugungi eng so'nggi texnologiya yangiliklari ro'yxati keltirilgan:
@@ -147,19 +197,24 @@ Quyida bugungi eng so'nggi texnologiya yangiliklari ro'yxati keltirilgan:
 
 Vazifang:
 1. Ushbu ro'yxatdan keng ommaga eng qiziqarli, eng muhim, shov-shuvli va dolzarb bo'lgan BITTA eng yaxshi yangilikni tanla.
-2. Tanlangan yangilikni o'zbek tilida Telegram kanal uchun diqqatni tortuvchi, lo'nda va ravon post ko'rinishida yozib ber.
+2. Tanlangan yangilikni o'zbek tilida Telegram kanal uchun diqqatni tortuvchi, lo'nda va ravon post ko'rinishida tayyorla.
 
-Javobingni QAT'IY quyidagi formatda ber:
-INDEX: [Tanlagan yangiliging raqami, masalan: 1]
-POST:
-[Mos smaylik va <b>qalin harflar bilan</b> diqqat tortuvchi sarlavha]
-
-[2-3 ta tushunarli gapdan iborat asosiy mazmun]
-
-[2-3 ta mos xeshteg, masalan: #IT #AI #texnologiya]"""
+QAT'IY TALABLAR:
+- Faqat toza O'zbek lotin alifbosidan foydalan. Arab, kirill yoki begona harflar aralashmasin (masalan 'lrzatgan' kabi xatolarga yo'l qo'yma, to'g'ri so'z: 'larzatgan'). Imlo va uslub juda ravon, xatosiz bo'lsin.
+- Xabar matni tanlangan yangilik (selected_id) mazmuniga 100% mos kelishi shart.
+- Javobingni FAQAT quyidagi JSON formatida ber:
+{{
+  "selected_id": 1,
+  "headline": "Mos smaylik va diqqat tortuvchi sarlavha",
+  "body": "2-3 ta tushunarli, ravon gapdan iborat asosiy mazmun",
+  "hashtags": "#Kripto #Xavfsizlik #IT"
+}}"""
 
     payload = {
-        "contents": [{"parts": [{"text": prompt}]}]
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "response_mime_type": "application/json"
+        }
     }
 
     for model in PREFERRED_MODELS:
@@ -179,39 +234,74 @@ POST:
                     .strip()
                 )
                 if ai_text:
-                    match = re.search(r"INDEX:\s*(\d+)", ai_text, re.IGNORECASE)
+                    # JSON parse qilishga urinib ko'ramiz
+                    parsed_json = None
+                    try:
+                        parsed_json = json.loads(ai_text)
+                    except Exception:
+                        json_match = re.search(r"\{.*\}", ai_text, re.DOTALL)
+                        if json_match:
+                            try:
+                                parsed_json = json.loads(json_match.group(0))
+                            except Exception:
+                                pass
+
                     chosen_idx = 0
+                    if parsed_json and isinstance(parsed_json, dict):
+                        sel_id = parsed_json.get("selected_id")
+                        try:
+                            num = int(sel_id) - 1
+                            if 0 <= num < len(candidates_subset):
+                                chosen_idx = num
+                            else:
+                                chosen_idx = find_best_matching_candidate(candidates_subset, ai_text, 0)
+                        except (ValueError, TypeError):
+                            chosen_idx = find_best_matching_candidate(candidates_subset, ai_text, 0)
+
+                        headline = sanitize_uzbek_text(parsed_json.get("headline", ""))
+                        body = sanitize_uzbek_text(parsed_json.get("body", ""))
+                        hashtags = sanitize_uzbek_text(parsed_json.get("hashtags", ""))
+
+                        # Sarlavhani qalin (bold) qilish
+                        if headline and not ("<b>" in headline and "</b>" in headline):
+                            parts = headline.split(" ", 1)
+                            if len(parts) == 2 and any(ord(char) > 127 for char in parts[0]):
+                                headline = f"{parts[0]} <b>{parts[1]}</b>"
+                            else:
+                                headline = f"<b>{headline}</b>"
+
+                        chosen = candidates_subset[chosen_idx]
+                        final_post = f"{headline}\n\n{body}\n\n{hashtags}\n\n🔗 <a href='{chosen['link']}'>Manba</a>"
+                        print(f"Gemini ({model}) orqali {chosen_idx+1}-raqamli yangilik tanlandi: {chosen['title'][:60]}")
+                        return chosen, final_post
+
+                    # JSON bo'lmagan holat uchun zaxira tahlil
+                    match = re.search(r'(?:selected_id|INDEX|TANLANGAN|ID)\s*["\':=]*\s*\[?(\d+)\]?', ai_text, re.IGNORECASE)
                     if match:
                         num = int(match.group(1)) - 1
-                        if 0 <= num < len(candidates[:10]):
+                        if 0 <= num < len(candidates_subset):
                             chosen_idx = num
-
-                    chosen = candidates[chosen_idx]
-
-                    if "POST:" in ai_text:
-                        post_content = ai_text.split("POST:", 1)[1].strip()
-                    elif match:
-                        post_content = ai_text[match.end():].strip()
+                        else:
+                            chosen_idx = find_best_matching_candidate(candidates_subset, ai_text, 0)
                     else:
-                        post_content = ai_text.strip()
+                        chosen_idx = find_best_matching_candidate(candidates_subset, ai_text, 0)
 
-                    final_post = f"{post_content}\n\n🔗 <a href='{chosen['link']}'>Manba</a>"
-                    print(f"Gemini ({model}) orqali {chosen_idx+1}-raqamli ommabop yangilik tanlandi: {chosen['title'][:50]}")
+                    chosen = candidates_subset[chosen_idx]
+                    cleaned_content = sanitize_uzbek_text(ai_text)
+                    final_post = f"{cleaned_content}\n\n🔗 <a href='{chosen['link']}'>Manba</a>"
+                    print(f"Gemini ({model}) zaxira rejimida {chosen_idx+1}-raqamli yangilik tanlandi: {chosen['title'][:60]}")
                     return chosen, final_post
             else:
                 print(f"AI ({model}) javob kodi: {response.status_code} - {response.text[:200]}")
+                time.sleep(2)
         except Exception as e:
             print(f"AI ({model}) xatolik: {e}")
+            time.sleep(2)
 
-    # AI ishlamay qolgandagi zaxira
-    top = candidates[0]
-    fallback = (
-        f"⚡️ <b>{top['title']}</b>\n\n"
-        f"{top['summary'][:300]}...\n\n"
-        f"#texnologiya #IT\n\n"
-        f"🔗 <a href='{top['link']}'>Manba</a>"
-    )
-    return top, fallback
+    # Agar barcha AI modellari xatolik bersa yoki band bo'lsa:
+    # QAT'IY QOIDA: Kanalga inglizcha xom xabar yuborilmaydi!
+    print("❌ Barcha AI modellari xatolik berdi yoki vaqtincha band. Xabar o'zbek tiliga tarjima qilinmagani sababli kanalga yuborilmaydi.")
+    return None, None
 
 
 def send_to_telegram(post_text):
